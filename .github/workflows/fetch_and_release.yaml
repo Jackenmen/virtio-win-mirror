@@ -1,0 +1,74 @@
+name: Fetch and release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        type: string
+        required: true
+        description: "Example: 0.1.302-1"
+
+jobs:
+  fetch_and_release:
+    name: Fetch and release
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+      contents: write
+    steps:
+      - name: Create a directory for artifacts
+        run: mkdir -p build/artifacts
+
+      - name: Prepare download URLs
+        id: prepare-download-urls
+        working-directory: build
+        env:
+          BASE_URL: https://fedorapeople.org/groups/virt/virtio-win/direct-downloads
+          INPUTS_VERSION: ${{ inputs.version }}
+        run: |
+          base_url="$BASE_URL/virtio-win-pkg-scripts-input/virtio-win-0.1.302-1"
+          pkg_scripts="$BASE_URL/virtio-win-pkg-scripts-input/virtio-win-$INPUTS_VERSION"
+          minor_version=$(echo "$INPUTS_VERSION" | cut -d. -f -2)
+          version_without_build="${INPUTS_VERSION%%-*}"
+          version_without_build="${version_without_build%.*}-${version_without_build##*.}"
+          echo "$pkg_scripts/virtio-win-prewhql-$minor_version.zip" > urls.txt
+          echo "$pkg_scripts/virtio-win-prewhql-$version_without_build-sources.zip" >> urls.txt
+          echo "$BASE_URL/archive-virtio/virtio-win-$INPUTS_VERSION/virtio-win-$INPUTS_VERSION.noarch.rpm" >> urls.txt
+          {
+            echo 'urls<<EOF'
+            cat urls.txt
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Fetch virtio-win-prewhql
+        working-directory: build/artifacts
+        env:
+          BASE_URL: https://fedorapeople.org/groups/virt/virtio-win/direct-downloads
+          INPUTS_VERSION: ${{ inputs.version }}
+        run: |
+          wget --input-file ../urls.txt
+          sha256sum virtio-win-* | tee SHA256SUMS
+
+      - name: Generate attestations
+        id: attest
+        uses: actions/attest@v4
+        with:
+          subject-checksums: build/artifacts/SHA256SUMS
+
+      - name: Make a release
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_NOTES: |
+            Release created from following upstream files:
+            ${{ steps.prepare-download-urls.outputs.urls }}
+
+            Artifact attestations available at:
+            ${{ steps.attest.outputs.attestation-url }}
+        run: |
+          gh release create "$INPUTS_VERSION" build/artifacts/* \
+            --title "$INPUTS_VERSION" \
+            --notes "$RELEASE_NOTES" \
+            --target "$GITHUB_REF"
